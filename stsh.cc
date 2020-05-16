@@ -23,6 +23,10 @@
 using namespace std;
 
 static STSHJobList joblist; // the one piece of global data we need so signal handlers can access it
+static void fgBuiltin(const pipeline& pipeline, size_t index);
+static void bgBuiltin(const pipeline& pipeline, size_t index);
+static void SHCBuiltin(const pipeline& pipeline, size_t index);
+
 
 /**
  * Function: handleBuiltin
@@ -42,12 +46,113 @@ static bool handleBuiltin(const pipeline& pipeline) {
   switch (index) {
   case 0:
   case 1: exit(0);
+  case 2: fgBuiltin(pipeline, index); break;
+  case 3: bgBuiltin(pipeline, index); break;
+  case 4: case 5: case 6: SHCBuiltin(pipeline, index); break;
   case 7: cout << joblist; break;
   default: throw STSHException("Internal Error: Builtin command not supported."); // or not implemented yet
   }
   
   return true;
 }
+
+/************************************************************************************************************/
+/* Builtins */
+/************************************************************************************************************/
+
+
+
+/**
+ * Function: fgBuiltin
+ * -------------------------
+ *
+ */
+static void fgBuiltin(const pipeline& pipeline, size_t index) {
+  char* first = pipeline.commands[0].tokens[0];
+  if (first == NULL)  throw STSHException("Usage: fg <jobid>.");
+  pid_t num = atoi(first);
+  char* ptr;
+  long ret = strtol(first, &ptr, 10);
+  if ((strlen(first) > 0 && strlen(ptr) > 0) || ret < 0) throw STSHException("Usage: fg <jobid>.");
+  if (!joblist.containsJob(num)) throw STSHException("fg " + to_string(num) + ":  No such job.");
+  STSHJob& job = joblist.getJob(num);
+  vector<STSHProcess>& processes = job.getProcesses();
+  sigset_t mask, existing;
+  sigemptyset(&mask);
+  sigaddset(&mask, SIGINT);
+  sigaddset(&mask, SIGCHLD);
+  sigaddset(&mask, SIGTSTP);
+  sigaddset(&mask, SIGCONT);
+  sigprocmask(SIG_BLOCK, &mask, &existing);
+  for (auto process: processes) {
+    if (kill(process.getID(), SIGCONT) == 0) job.setState(kForeground);
+  }
+  joblist.synchronize(job);
+  while(joblist.hasForegroundJob()) sigsuspend(&existing);
+  sigprocmask(SIG_UNBLOCK, &mask, NULL);
+}
+
+
+/**
+ * Function: bgBuiltin
+ * ----------------------
+ *
+ */
+static void bgBuiltin(const pipeline& pipeline, size_t index) {
+  char* first = pipeline.commands[0].tokens[0];
+  if (first == NULL) throw STSHException("Usage: bg <jobid>.");
+  pid_t num = atoi(first);
+  char* ptr;
+  long ret = strtol(first, &ptr, 10);
+  if ((strlen(first) > 0 && strlen(ptr) > 0) || ret < 0) throw STSHException("Usage: bg <jobid>.");
+  if (!joblist.containsJob(num)) throw STSHException("bg " + to_string(num) + ":  No such job.");
+  STSHJob& job = joblist.getJob(num);
+  vector<STSHProcess>& processes = job.getProcesses();
+  for (auto process: processes) kill(process.getID(), SIGCONT);
+  joblist.synchronize(job);
+}
+
+/**
+ * Function: SHCBuiltin
+ * ----------------------
+ * Support for Slay, Halt, Continue builtins
+ */
+
+static void SHCBuiltin(const pipeline& pipeline, size_t index){
+  char* first = pipeline.commands[0].tokens[0];
+  char* second = pipeline.commands[0].tokens[1];
+  int killer;
+  switch(index) {
+  case 4: killer = SIGKILL;
+  case 5: killer = SIGSTOP;
+  case 6: killer = SIGCONT;
+  }
+  string builtin;
+  switch(index) {
+  case 4: builtin = "slay";
+  case 5: builtin = "halt";
+  case 6: builtin = "cont";
+  }
+  if (first == NULL)  throw STSHException("Usage: " + builtin + " <jobid> <index> | <pid>.");
+  pid_t num = atoi(first);
+  char* ptr;
+  long ret = strtol(first, &ptr, 10);
+  if (second == NULL) {
+    if ((strlen(first) > 0 && strlen(ptr) > 0) || ret < 0) throw STSHException("Usage: bg <jobid>.");
+    if (!joblist.containsProcess(num)) throw STSHException("No process with pid " + to_string(num) + ".");
+    STSHJob& job = joblist.getJobWithProcess(num);
+    vector<STSHProcess>& processes = job.getProcesses();
+    for (auto process: processes) kill(process.getID(), killer);
+  } else if (second != NULL) {
+    if (!joblist.containsJob(num)) throw STSHException("No job with id of " + to_string(num) + ".");
+    STSHJob& job = joblist.getJob(num);
+    pid_t pid = atoi(second);
+    if (!job.containsProcess(pid)) throw STSHException("No process pid " + to_string(pid) + ".");
+    STSHProcess process = job.getProcess(pid);
+    kill(process.getID(), killer);
+  }
+}
+
 
 /************************************************************************************************************/
 /* Signal Handlers */
