@@ -19,6 +19,7 @@
 #include <unistd.h>  // for fork
 #include <signal.h>  // for kill
 #include <sys/wait.h>
+#include <assert.h>
 using namespace std;
 
 static STSHJobList joblist; // the one piece of global data we need so signal handlers can access it
@@ -66,14 +67,132 @@ static void installSignalHandlers() {
   installSignalHandler(SIGTTOU, SIG_IGN);
 }
 
+/************************************************************************************************************/
+/* Dup2, Print Background process  */
+/************************************************************************************************************/
+
+
+/**
+ * Function: Dup2
+ * ----------------
+ */
+void Dup2(int infd1, int infd2) {
+  dup2(infd1, infd2) ;
+  close(infd1) ;
+}
+
+/**
+ * Function: Close
+ * ---------------
+ */
+void Close(int* fd) {
+  close(fd[0]);
+  close(fd[1]);
+}
+
+/**
+ * Function: printBG
+ * --------------------------
+ */
+void printBG(STSHJob& job) {
+  std::vector<STSHProcess>& processes = job.getProcesses();
+  cout << "[" << job.getNum() << "]";
+  for (auto process: processes) cout << " "<< process.getID();
+  cout << endl;
+}
+
 /**
  * Function: createJob
  * -------------------
  * Creates a new job on behalf of the provided pipeline.
  */
 static void createJob(const pipeline& p) {
-  cout << p; // remove this line once you get started
+  //  cout << p; // remove this line once you get started
   /* STSHJob& job = */ joblist.addJob(kForeground);
+  
+  STSHJobState state = (p.background) ? kBackground : kForeground;
+  STSHJob& job = joblist.addJob(state);
+
+  sigset_t existing, mask;
+  sigemptyset(&mask);
+  sigaddset(&mask, SIGCHLD);
+  sigaddset(&mask, SIGINT);
+  sigaddset(&mask, SIGTSTP);
+  sigaddset(&mask, SIGCONT);
+
+  int count = p.commands.size();
+  int fds[count][2];
+
+  int infd = (!p.input.empty()) ? open(p.input.c_str(), O_RDONLY) : 0;
+  int outfd = (!p.output.empty()) ? open(p.output.c_str(), O_WRONLY|O_TRUNC) : 0;
+  if (outfd == -1) outfd = open(p.output.c_str(), O_WRONLY|O_CREAT, 0644);
+
+  for (size_t i = 0; i < count - 1; i++) pipe(fds[i]);
+ 
+  for(size_t i = 0; i < count; i++) {
+    pid_t pid;
+    command cmd =  p.commands[i];
+    if((pid = fork()) == 0) {                              //Child process
+      setpgid(pid, job.getGroupID());
+      if (count == 1) {                                    // Support for input and output redirection/Single Pipe
+	if(!p.input.empty())   Dup2(infd, STDIN_FILENO);
+	if(!p.output.empty())  Dup2(outfd, STDOUT_FILENO);
+      } else {
+	if(i == 0) {                                       // Set infd as STDIN_FILENO file descriptor
+	  if(!p.input.empty())   Dup2(infd, STDIN_FILENO);
+	  close(fds[i][0]);
+	  Dup2(fds[i][1], STDOUT_FILENO);
+	  close(fds[count][0]);
+	  close(fds[count][1]);
+	} else if(i == count - 1) {                        // Set outfd as STDOUT_FILENO file descriptor
+	  if(!p.output.empty())   Dup2(outfd, STDOUT_FILENO);
+	  close(fds[i - 1][1]);
+	  Dup2(fds[i - 1][0], STDIN_FILENO);
+	  Close(fds[0]);
+	} else {                                           // Connect all other file descriptors via pipes
+	  close(fds[i - 1][1]);
+	  Dup2(fds[i - 1][0], STDIN_FILENO);
+	  close(fds[i][0]);
+	  Dup2(fds[i][1], STDOUT_FILENO);
+     	  Close(fds[0]);
+	  Close(fds[count - 1]);
+      	}
+
+	for(int j = 1; j < count - 2; j++) Close(fds[j]);
+      }
+
+      size_t len = sizeof(cmd.tokens)/sizeof(cmd.tokens[0]); // Execute lines
+      char* args[len + 3];
+      args[0] = const_cast<char *>(cmd.command);
+      for (size_t i = 0; i <= len; i++) {
+	args[i + 1] = const_cast<char *>(cmd.tokens[i]);
+      }
+      args[len + 2] = NULL;
+      string str(args[0]);
+
+      if (execvp(args[0], args) < 0) throw STSHException(str + ": Command not found.");
+    } else {                                                 // Parent Process
+      job.addProcess(STSHProcess(pid, cmd));                 // Add the process in child, to Parent
+      setpgid(pid, job.getGroupID());                        // change the process's Group id
+    }
+  }
+
+  for(size_t i = 0; i < count - 1; i++) {
+    Close(fds[i]);
+  }
+
+  if(p.background) printBG(job);                             // Print out background job id.s
+
+  if(joblist.hasForegroundJob()) {
+    if(tcsetpgrp(STDIN_FILENO, job.getGroupID()) == -1 && errno != ENOTTY)  throw STSHException("authority error.");
+  }
+
+  if(tcsetpgrp(STDIN_FILENO, getpgid(getpid())) == -1 && errno != ENOTTY) throw STSHException("authority error.");
+
+  sigprocmask(SIG_BLOCK, &mask, &existing);
+
+  while(joblist.hasForegroundJob())  sigsuspend(&existing);   //Suspend the mask while there is foreground job
+  sigprocmask(SIG_UNBLOCK, &mask, NULL);
 }
 
 /**
