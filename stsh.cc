@@ -95,7 +95,7 @@ void Close(int* fd) {
  * --------------------------
  */
 void printBG(STSHJob& job) {
-  std::vector<STSHProcess>& processes = job.getProcesses();
+  vector<STSHProcess>& processes = job.getProcesses();
   cout << "[" << job.getNum() << "]";
   for (auto process: processes) cout << " "<< process.getID();
   cout << endl;
@@ -107,8 +107,8 @@ void printBG(STSHJob& job) {
  * Creates a new job on behalf of the provided pipeline.
  */
 static void createJob(const pipeline& p) {
-  //  cout << p; // remove this line once you get started
-  /* STSHJob& job = */ joblist.addJob(kForeground);
+  
+  ///* STSHJob& job = */ joblist.addJob(kForeground);
   
   STSHJobState state = (p.background) ? kBackground : kForeground;
   STSHJob& job = joblist.addJob(state);
@@ -127,23 +127,22 @@ static void createJob(const pipeline& p) {
   int outfd = (!p.output.empty()) ? open(p.output.c_str(), O_WRONLY|O_TRUNC) : 0;
   if (outfd == -1) outfd = open(p.output.c_str(), O_WRONLY|O_CREAT, 0644);
 
-  for (size_t i = 0; i < count - 1; i++) pipe(fds[i]);
- 
+    for (size_t i = 0; i < count - 1; i++) pipe(fds[i]);
+   
   for(size_t i = 0; i < count; i++) {
-    pid_t pid;
     command cmd =  p.commands[i];
-    if((pid = fork()) == 0) {                              //Child process
+    pid_t pid = fork();
+    if(pid == 0) {                              //Child process
       setpgid(pid, job.getGroupID());
-      if (count == 1) {                                    // Support for input and output redirection/Single Pipe
+      if (count == 1) {                                   
 	if(!p.input.empty())   Dup2(infd, STDIN_FILENO);
 	if(!p.output.empty())  Dup2(outfd, STDOUT_FILENO);
       } else {
 	if(i == 0) {                                       // Set infd as STDIN_FILENO file descriptor
 	  if(!p.input.empty())   Dup2(infd, STDIN_FILENO);
-	  close(fds[i][0]);
-	  Dup2(fds[i][1], STDOUT_FILENO);
-	  close(fds[count][0]);
-	  close(fds[count][1]);
+	  close(fds[0][0]);
+	  Dup2(fds[0][1], STDOUT_FILENO);
+	  Close(fds[count]);
 	} else if(i == count - 1) {                        // Set outfd as STDOUT_FILENO file descriptor
 	  if(!p.output.empty())   Dup2(outfd, STDOUT_FILENO);
 	  close(fds[i - 1][1]);
@@ -176,13 +175,13 @@ static void createJob(const pipeline& p) {
       setpgid(pid, job.getGroupID());                        // change the process's Group id
     }
   }
-
+  
   for(size_t i = 0; i < count - 1; i++) {
     Close(fds[i]);
   }
 
   if(p.background) printBG(job);                             // Print out background job id.s
-
+  /*
   if(joblist.hasForegroundJob()) {
     if(tcsetpgrp(STDIN_FILENO, job.getGroupID()) == -1 && errno != ENOTTY)  throw STSHException("authority error.");
   }
@@ -190,9 +189,10 @@ static void createJob(const pipeline& p) {
   if(tcsetpgrp(STDIN_FILENO, getpgid(getpid())) == -1 && errno != ENOTTY) throw STSHException("authority error.");
 
   sigprocmask(SIG_BLOCK, &mask, &existing);
-
-  while(joblist.hasForegroundJob())  sigsuspend(&existing);   //Suspend the mask while there is foreground job
+  */
+  //  while(joblist.hasForegroundJob())  sigsuspend(&existing);   //Suspend the mask while there is foreground job
   sigprocmask(SIG_UNBLOCK, &mask, NULL);
+  
 }
 
 /**
