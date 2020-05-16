@@ -49,6 +49,68 @@ static bool handleBuiltin(const pipeline& pipeline) {
   return true;
 }
 
+/************************************************************************************************************/
+/* Signal Handlers */
+/************************************************************************************************************/
+
+
+/**
+ * Function: reapChild
+ * -----------------------
+ * reap any children who has terminated/stopped.
+ * and update the process state.
+ */
+
+void sigchldHandler(int sig) {
+  while(1) {
+    pid_t pid;
+    int status;
+    STSHProcessState state;
+    pid = waitpid(-1, &status, WNOHANG|WUNTRACED|WCONTINUED);
+    if (pid <= 0) break;
+    if(WIFEXITED(status))  state = kTerminated;
+    if (WIFCONTINUED(status))  state = kRunning;
+    if (WIFSIGNALED(status))  state = kTerminated;
+    if (WIFSTOPPED(status))  state = kStopped;
+
+    STSHJob& job = joblist.getJobWithProcess(pid);
+    assert(job.containsProcess(pid));
+    job.getProcess(pid).setState(state);
+    joblist.synchronize(job);
+  }
+}
+
+
+/**
+ * Function: siginHandler
+ * ---------------------------------------
+ * Custom Handler to forward SIGINT to the
+ * foreground job, if exist.
+ */
+
+void sigintHandler(int sig) {
+  if (joblist.hasForegroundJob()) {
+    STSHJob& job = joblist.getForegroundJob();
+    std::vector<STSHProcess>& processes = job.getProcesses();
+    for (auto process: processes) kill(process.getID(), SIGINT);
+  }
+}
+
+/**
+ * Function: sigtstpHandler
+ * -----------------------------------------
+ *  Custom Handler to forward SIGTSTP to the
+ * foreground job, if exist.
+ */
+
+void sigtstpHandler(int sig) {
+  if (joblist.hasForegroundJob()) {
+    STSHJob& job = joblist.getForegroundJob();
+    std::vector<STSHProcess>& processes = job.getProcesses();
+    for (auto process: processes) kill(process.getID(), SIGTSTP);
+  }
+}
+
 /**
  * Function: installSignalHandlers
  * -------------------------------
@@ -65,6 +127,9 @@ static void installSignalHandlers() {
   installSignalHandler(SIGQUIT, [](int sig) { exit(0); });
   installSignalHandler(SIGTTIN, SIG_IGN);
   installSignalHandler(SIGTTOU, SIG_IGN);
+  installSignalHandler(SIGCHLD, sigchldHandler);
+  installSignalHandler(SIGINT, sigintHandler);
+  installSignalHandler(SIGTSTP, sigtstpHandler);
 }
 
 /************************************************************************************************************/
@@ -181,16 +246,16 @@ static void createJob(const pipeline& p) {
   }
 
   if(p.background) printBG(job);                             // Print out background job id.s
-  /*
+  
   if(joblist.hasForegroundJob()) {
     if(tcsetpgrp(STDIN_FILENO, job.getGroupID()) == -1 && errno != ENOTTY)  throw STSHException("authority error.");
   }
 
   if(tcsetpgrp(STDIN_FILENO, getpgid(getpid())) == -1 && errno != ENOTTY) throw STSHException("authority error.");
-
+  
   sigprocmask(SIG_BLOCK, &mask, &existing);
-  */
-  //  while(joblist.hasForegroundJob())  sigsuspend(&existing);   //Suspend the mask while there is foreground job
+ 
+  while(joblist.hasForegroundJob())  sigsuspend(&existing);   //Suspend the mask while there is foreground job
   sigprocmask(SIG_UNBLOCK, &mask, NULL);
   
 }
