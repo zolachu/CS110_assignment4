@@ -50,7 +50,7 @@ static bool handleBuiltin(const pipeline& pipeline) {
   case 3: bgBuiltin(pipeline, index); break;
   case 4: case 5: case 6: SHCBuiltin(pipeline, index); break;
   case 7: cout << joblist; break;
-  default: throw STSHException("Internal Error: Builtin command not supported."); // or not implemented yet
+  default: throw STSHException("Internal Error: Builtin command not supported."); 
   }
   
   return true;
@@ -360,7 +360,7 @@ static void createJob(const pipeline& p) {
   
   sigprocmask(SIG_BLOCK, &mask, &existing);
  
-  while(joblist.hasForegroundJob())  sigsuspend(&existing);   //Suspend the mask while there is foreground job
+  while(joblist.hasForegroundJob())  sigsuspend(&existing); 
   sigprocmask(SIG_UNBLOCK, &mask, NULL);
   
 }
